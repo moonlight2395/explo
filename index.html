@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Transit Reliability Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/sql-wasm.js"></script>
+
+<style>
+:root {
+  --bg: #0d1117;
+  --surface: #161b22;
+  --surface2: #21262d;
+  --border: #30363d;
+  --text: #e6edf3;
+  --muted: #8b949e;
+  --green: #2ECC71;
+  --yellow: #F1C40F;
+  --red: #E74C3C;
+  --accent: #58a6ff;
+  --card-bg: rgba(22,27,34,0.92);
+}
+[data-theme="light"] {
+  --bg: #f0f2f5;
+  --surface: #ffffff;
+  --surface2: #f6f8fa;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --muted: #57606a;
+  --card-bg: rgba(255,255,255,0.95);
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Space Mono',monospace; background:var(--bg); color:var(--text); height:100vh; display:flex; flex-direction:column; overflow:hidden; transition:background 0.3s, color 0.3s; }
+
+/* HEADER */
+#header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:10px 20px; background:var(--surface); border-bottom:1px solid var(--border);
+  flex-shrink:0; gap:12px; flex-wrap:wrap;
+}
+#header h1 { font-family:'Syne',sans-serif; font-weight:800; font-size:1.1rem; letter-spacing:0.05em; }
+#header h1 span { color:var(--accent); }
+.metrics { display:flex; gap:10px; flex-wrap:wrap; }
+.metric-card {
+  background:var(--surface2); border:1px solid var(--border);
+  border-radius:8px; padding:6px 14px; text-align:center; min-width:90px;
+}
+.metric-card .val { font-family:'Syne',sans-serif; font-size:1.3rem; font-weight:800; }
+.metric-card .lbl { font-size:0.6rem; color:var(--muted); letter-spacing:0.08em; text-transform:uppercase; }
+.m-green .val { color:var(--green); }
+.m-yellow .val { color:var(--yellow); }
+.m-red .val { color:var(--red); }
+.m-total .val { color:var(--accent); }
+
+/* CONTROLS */
+#controls {
+  display:flex; align-items:center; gap:8px; flex-shrink:0;
+}
+.btn {
+  font-family:'Space Mono',monospace; font-size:0.7rem; padding:6px 12px;
+  border-radius:6px; border:1px solid var(--border); background:var(--surface2);
+  color:var(--text); cursor:pointer; transition:all 0.2s; letter-spacing:0.03em;
+}
+.btn:hover { border-color:var(--accent); color:var(--accent); }
+.btn.active { background:var(--accent); color:#000; border-color:var(--accent); font-weight:700; }
+#theme-toggle {
+  background:var(--surface2); border:1px solid var(--border); border-radius:6px;
+  padding:6px 10px; cursor:pointer; font-size:1rem; transition:all 0.2s;
+}
+#theme-toggle:hover { border-color:var(--accent); }
+
+/* MAIN LAYOUT */
+#main { display:flex; flex:1; overflow:hidden; }
+#map { flex:1; position:relative; }
+#panel {
+  width:300px; background:var(--surface); border-left:1px solid var(--border);
+  display:flex; flex-direction:column; overflow:hidden; flex-shrink:0;
+  transition:width 0.3s;
+}
+#panel.collapsed { width:0; }
+
+/* PANEL CONTENT */
+.panel-section {
+  padding:14px; border-bottom:1px solid var(--border);
+}
+.panel-section h3 {
+  font-family:'Syne',sans-serif; font-size:0.75rem; font-weight:700;
+  text-transform:uppercase; letter-spacing:0.1em; color:var(--muted); margin-bottom:10px;
+}
+#chart-container { height:160px; position:relative; }
+#hourly-container { height:120px; position:relative; }
+
+/* SEARCH */
+#search-wrap { position:relative; margin-bottom:10px; }
+#search-input {
+  width:100%; padding:8px 10px; border-radius:6px;
+  border:1px solid var(--border); background:var(--surface2);
+  color:var(--text); font-family:'Space Mono',monospace; font-size:0.75rem;
+  outline:none; transition:border-color 0.2s;
+}
+#search-input:focus { border-color:var(--accent); }
+#search-results {
+  position:absolute; top:100%; left:0; right:0; background:var(--surface);
+  border:1px solid var(--border); border-radius:6px; max-height:150px;
+  overflow-y:auto; z-index:1000; display:none;
+}
+.search-item { padding:6px 10px; font-size:0.72rem; cursor:pointer; border-bottom:1px solid var(--border); }
+.search-item:hover { background:var(--surface2); color:var(--accent); }
+
+/* DELAY RANGE SLIDER */
+.slider-wrap { padding:0 2px; }
+#delay-slider { width:100%; accent-color:var(--accent); }
+.slider-labels { display:flex; justify-content:space-between; font-size:0.65rem; color:var(--muted); margin-top:4px; }
+
+/* LEGEND */
+.legend-item { display:flex; align-items:center; gap:8px; margin-bottom:6px; font-size:0.72rem; }
+.legend-dot { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+
+/* HOVER POPUP */
+.custom-popup {
+  background:var(--card-bg) !important; border:1px solid var(--border) !important;
+  border-radius:8px !important; font-family:'Space Mono',monospace !important;
+  padding:12px !important; min-width:200px; box-shadow:0 8px 32px rgba(0,0,0,0.3) !important;
+}
+.popup-name { font-family:'Syne',sans-serif; font-weight:700; font-size:0.9rem; margin-bottom:8px; }
+.popup-row { font-size:0.7rem; color:var(--muted); margin-bottom:3px; display:flex; justify-content:space-between; gap:10px; }
+.popup-row span { color:var(--text); }
+.popup-delay { font-size:1.1rem; font-family:'Syne',sans-serif; font-weight:800; margin-top:8px; }
+
+/* TOGGLE PANEL BTN */
+#toggle-panel {
+  position:absolute; top:50%; right:300px; transform:translateY(-50%);
+  z-index:900; background:var(--surface); border:1px solid var(--border);
+  border-radius:4px 0 0 4px; padding:8px 5px; cursor:pointer;
+  font-size:0.8rem; transition:right 0.3s; color:var(--text);
+}
+#toggle-panel.collapsed { right:0; border-radius:4px 0 0 4px; }
+
+/* MAP OVERLAY */
+#map-overlay {
+  position:absolute; bottom:20px; left:20px; z-index:800;
+  background:var(--card-bg); border:1px solid var(--border);
+  border-radius:8px; padding:10px 14px; font-size:0.7rem; backdrop-filter:blur(8px);
+}
+
+/* LOADING */
+#loading {
+  position:fixed; inset:0; background:rgba(13, 17, 23, 0.9); display:none;
+  flex-direction:column; align-items:center; justify-content:center; z-index:9999; backdrop-filter: blur(5px);
+}
+#loading h2 { font-family:'Syne',sans-serif; font-size:1.5rem; font-weight:800; margin-bottom:12px; color:var(--text);}
+.loader { width:48px; height:4px; background:var(--border); border-radius:2px; overflow:hidden; }
+.loader::after { content:''; display:block; width:40%; height:100%; background:var(--accent); border-radius:2px; animation:load 1s infinite; }
+@keyframes load { 0%{transform:translateX(-100%)} 100%{transform:translateX(350%)} }
+
+/* LEAFLET overrides */
+.leaflet-container { background:transparent; }
+.leaflet-popup-content-wrapper, .leaflet-popup-tip { display:none; }
+</style>
+</head>
+<body data-theme="dark">
+
+<div id="loading">
+  <h2>🚌 Transit <span style="color:var(--accent)">Dashboard</span></h2>
+  <p id="loading-text" style="color:var(--muted);font-size:0.75rem;margin-bottom:16px;">Processing database...</p>
+  <div class="loader"></div>
+</div>
+
+<div id="header">
+  <div style="display:flex;align-items:center;gap:16px;">
+    <h1>🚌 Transit <span>Reliability</span> Dashboard</h1>
+    <div id="controls">
+      <button class="btn active" onclick="setFilter('all')">All</button>
+      <button class="btn" onclick="setFilter('On-Time')">✅ On-Time</button>
+      <button class="btn" onclick="setFilter('Slightly Late')">⚠️ Slight</button>
+      <button class="btn" onclick="setFilter('Heavy Delay')">🚨 Heavy</button>
+      
+      <label for="db-upload" class="btn" style="background:var(--accent);color:#000;font-weight:bold;margin-left:10px;">
+        📂 Load .db File
+      </label>
+      <input type="file" id="db-upload" accept=".db,.sqlite,.sqlite3" style="display:none;" />
+      
+    </div>
+  </div>
+  <div style="display:flex;align-items:center;gap:10px;">
+    <div class="metrics">
+      <div class="metric-card m-total"><div class="val" id="m-total">0</div><div class="lbl">Total</div></div>
+      <div class="metric-card m-green"><div class="val" id="m-ontime">0</div><div class="lbl">On-Time</div></div>
+      <div class="metric-card m-yellow"><div class="val" id="m-slight">0</div><div class="lbl">Slight</div></div>
+      <div class="metric-card m-red"><div class="val" id="m-heavy">0</div><div class="lbl">Heavy</div></div>
+    </div>
+    <button id="theme-toggle" onclick="toggleTheme()">☀️</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="map"></div>
+  <button id="toggle-panel" onclick="togglePanel()">◀</button>
+  <div id="panel">
+    <div class="panel-section">
+      <h3>Search Stop</h3>
+      <div id="search-wrap">
+        <input id="search-input" type="text" placeholder="Type stop name..." oninput="onSearch(this.value)"/>
+        <div id="search-results"></div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <h3>Delay Filter (min)</h3>
+      <div class="slider-wrap">
+        <input id="delay-slider" type="range" min="-16" max="22" value="22" step="1" oninput="onDelaySlider(this.value)"/>
+        <div class="slider-labels"><span>-16 (Early)</span><span id="slider-val">All</span><span>+22</span></div>
+      </div>
+    </div>
+    <div class="panel-section">
+      <h3>Performance Breakdown</h3>
+      <div id="chart-container"><canvas id="pie-chart"></canvas></div>
+    </div>
+    <div class="panel-section">
+      <h3>Delays by Hour</h3>
+      <div id="hourly-container"><canvas id="hourly-chart"></canvas></div>
+    </div>
+    <div class="panel-section">
+      <h3>Legend</h3>
+      <div class="legend-item"><div class="legend-dot" style="background:#2ECC71"></div> On-Time (≤2 min)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#F1C40F"></div> Slightly Late (2–8 min)</div>
+      <div class="legend-item"><div class="legend-dot" style="background:#E74C3C"></div> Heavy Delay (>8 min)</div>
+    </div>
+  </div>
+</div>
+
+<div id="map-overlay">
+  <div style="font-family:Syne,sans-serif;font-weight:700;margin-bottom:4px;">Live Data Map</div>
+  <div style="color:var(--muted);">Please load a database file to begin</div>
+</div>
+
+<script>
+let RAW = []; // Starts empty now
+let uniqueNames = [];
+
+const COLOR = {'On-Time':'#2ECC71','Slightly Late':'#F1C40F','Heavy Delay':'#E74C3C'};
+let currentFilter = 'all';
+let maxDelay = 22;
+let markerLayer = null;
+let pieChart = null, hourlyChart = null;
+let panelOpen = true;
+
+// ── MAP INIT ──────────────────────────────────────────────────────────────────
+const map = L.map('map', {
+  center: [15.5, 80.2], zoom: 7,
+  zoomControl: true
+});
+
+let darkTile = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+  attribution: '©OpenStreetMap ©CartoDB', maxZoom: 19
+});
+let lightTile = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+  attribution: '©OpenStreetMap ©CartoDB', maxZoom: 19
+});
+darkTile.addTo(map);
+let isDark = true;
+
+// ── DATABASE UPLOAD & PARSING ─────────────────────────────────────────────────
+document.getElementById('db-upload').addEventListener('change', async function(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const loading = document.getElementById('loading');
+  loading.style.display = 'flex';
+
+  try {
+    // 1. Read file to ArrayBuffer
+    const buffer = await file.arrayBuffer();
+    
+    // 2. Initialize sql.js WebAssembly
+    const SQL = await initSqlJs({ 
+      locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.8.0/${file}` 
+    });
+    
+    // 3. Load DB into memory
+    const db = new SQL.Database(new Uint8Array(buffer));
+
+    // 4. Query the database
+    // IMPORTANT: Make sure the table name here matches your SQLite file! 
+    // I am using a generic fallback query, but you might need to adjust "transit_data"
+    let query = "";
+    
+    // Auto-detect table name (looks for the first user table)
+    const tables = db.exec("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%';");
+    if(tables.length > 0 && tables[0].values.length > 0) {
+      const tableName = tables[0].values[0][0];
+      query = `SELECT name, lat, lon, delay, perf, hour, sched, actual FROM ${tableName}`;
+    } else {
+      throw new Error("No valid tables found in database.");
+    }
+
+    const res = db.exec(query);
+    
+    if (res.length > 0) {
+      const columns = res[0].columns;
+      RAW = res[0].values.map(row => {
+        let obj = {};
+        columns.forEach((col, i) => obj[col] = row[i]);
+        return obj;
+      });
+      
+      uniqueNames = [...new Set(RAW.map(d => d.name))].sort();
+      document.querySelector('#map-overlay div:nth-child(2)').textContent = `Loaded ${RAW.length} records`;
+      
+      renderMarkers();
+    } else {
+      alert("Table found, but it contained no records.");
+    }
+
+  } catch (err) {
+    console.error(err);
+    alert("Error loading database: " + err.message + "\nMake sure your .db file has the expected columns (name, lat, lon, delay, perf, hour, sched, actual).");
+  } finally {
+    loading.style.display = 'none';
+  }
+});
+
+
+// ── FILTER & RENDER ───────────────────────────────────────────────────────────
+function getFiltered() {
+  return RAW.filter(d => {
+    const perfOk = currentFilter === 'all' || d.perf === currentFilter;
+    const delayOk = d.delay <= maxDelay;
+    return perfOk && delayOk;
+  });
+}
+
+function renderMarkers() {
+  if (markerLayer) map.removeLayer(markerLayer);
+  const data = getFiltered();
+  const markers = data.map(d => {
+    const col = COLOR[d.perf] || '#ffffff';
+    const m = L.circleMarker([d.lat, d.lon], {
+      radius: 5,
+      fillColor: col,
+      color: 'rgba(0,0,0,0.3)',
+      weight: 0.5,
+      fillOpacity: 0.82
+    });
+    const sign = d.delay >= 0 ? '+' : '';
+    m.bindTooltip(`
+      <div class="custom-popup">
+        <div class="popup-name">${d.name}</div>
+        <div class="popup-row">Scheduled: <span>${d.sched}</span></div>
+        <div class="popup-row">Actual: <span>${d.actual}</span></div>
+        <div class="popup-delay" style="color:${col}">${sign}${d.delay} min</div>
+        <div class="popup-row" style="margin-top:4px">Status: <span style="color:${col}">${d.perf}</span></div>
+      </div>
+    `, {
+      className: '', permanent: false, sticky: true, opacity: 1,
+      offset: [10, 0]
+    });
+    return m;
+  });
+  markerLayer = L.layerGroup(markers).addTo(map);
+  updateMetrics(data);
+  updateCharts(data);
+}
+
+function updateMetrics(data) {
+  document.getElementById('m-total').textContent = data.length.toLocaleString();
+  const cnt = {'On-Time':0,'Slightly Late':0,'Heavy Delay':0};
+  data.forEach(d => { if(cnt[d.perf] !== undefined) cnt[d.perf]++ });
+  document.getElementById('m-ontime').textContent = cnt['On-Time'].toLocaleString();
+  document.getElementById('m-slight').textContent = cnt['Slightly Late'].toLocaleString();
+  document.getElementById('m-heavy').textContent = cnt['Heavy Delay'].toLocaleString();
+}
+
+function updateCharts(data) {
+  const cnt = {'On-Time':0,'Slightly Late':0,'Heavy Delay':0};
+  data.forEach(d => { if(cnt[d.perf] !== undefined) cnt[d.perf]++ });
+  if (pieChart) {
+    pieChart.data.datasets[0].data = [cnt['On-Time'], cnt['Slightly Late'], cnt['Heavy Delay']];
+    pieChart.update();
+  }
+  // Hourly average delay
+  const hourBuckets = Array.from({length:24}, () => []);
+  data.forEach(d => { if (d.hour >= 0 && d.hour < 24) hourBuckets[d.hour].push(d.delay); });
+  const hourAvg = hourBuckets.map(b => b.length ? (b.reduce((a,v)=>a+v,0)/b.length).toFixed(1) : 0);
+  if (hourlyChart) {
+    hourlyChart.data.datasets[0].data = hourAvg;
+    hourlyChart.update();
+  }
+}
+
+// ── FILTER BUTTONS ────────────────────────────────────────────────────────────
+function setFilter(f) {
+  currentFilter = f;
+  document.querySelectorAll('#controls .btn:not(label)').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  renderMarkers();
+}
+
+// ── DELAY SLIDER ──────────────────────────────────────────────────────────────
+function onDelaySlider(v) {
+  maxDelay = parseInt(v);
+  document.getElementById('slider-val').textContent = v == 22 ? 'All' : v + ' min';
+  renderMarkers();
+}
+
+// ── SEARCH ────────────────────────────────────────────────────────────────────
+function onSearch(q) {
+  const res = document.getElementById('search-results');
+  if (!q.trim()) { res.style.display='none'; return; }
+  const matches = uniqueNames.filter(n => n.toLowerCase().includes(q.toLowerCase())).slice(0,8);
+  if (!matches.length) { res.style.display='none'; return; }
+  res.innerHTML = matches.map(n => `<div class="search-item" onclick="focusPlace('${n}')">${n}</div>`).join('');
+  res.style.display = 'block';
+}
+function focusPlace(name) {
+  const rec = RAW.find(d => d.name === name);
+  if (rec) { map.flyTo([rec.lat, rec.lon], 12, {duration:1}); }
+  document.getElementById('search-results').style.display='none';
+  document.getElementById('search-input').value = name;
+}
+
+// ── THEME TOGGLE ──────────────────────────────────────────────────────────────
+function toggleTheme() {
+  isDark = !isDark;
+  document.body.setAttribute('data-theme', isDark ? 'dark' : 'light');
+  document.getElementById('theme-toggle').textContent = isDark ? '☀️' : '🌙';
+  if (isDark) { map.removeLayer(lightTile); darkTile.addTo(map); }
+  else { map.removeLayer(darkTile); lightTile.addTo(map); }
+  if (pieChart) {
+    const tc = isDark ? '#e6edf3' : '#1f2328';
+    pieChart.options.plugins.legend.labels.color = tc;
+    pieChart.update();
+  }
+  if (hourlyChart) {
+    const tc = isDark ? '#e6edf3' : '#1f2328';
+    hourlyChart.options.scales.x.ticks.color = tc;
+    hourlyChart.options.scales.y.ticks.color = tc;
+    hourlyChart.options.scales.x.grid.color = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.08)';
+    hourlyChart.options.scales.y.grid.color = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.08)';
+    hourlyChart.update();
+  }
+}
+
+// ── PANEL TOGGLE ──────────────────────────────────────────────────────────────
+function togglePanel() {
+  panelOpen = !panelOpen;
+  document.getElementById('panel').classList.toggle('collapsed', !panelOpen);
+  const btn = document.getElementById('toggle-panel');
+  btn.textContent = panelOpen ? '▶' : '◀';
+  btn.style.right = panelOpen ? '300px' : '0';
+  setTimeout(() => map.invalidateSize(), 320);
+}
+
+// ── INIT CHARTS ───────────────────────────────────────────────────────────────
+function initCharts() {
+  const pieCtx = document.getElementById('pie-chart').getContext('2d');
+  pieChart = new Chart(pieCtx, {
+    type: 'doughnut',
+    data: {
+      labels: ['On-Time', 'Slightly Late', 'Heavy Delay'],
+      datasets: [{ data:[0,0,0], backgroundColor:['#2ECC71','#F1C40F','#E74C3C'], borderWidth:0 }]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins: {
+        legend: {
+          position:'right',
+          labels: { color:'#e6edf3', font:{ family:'Space Mono', size:10 }, boxWidth:12 }
+        }
+      }
+    }
+  });
+
+  const hourCtx = document.getElementById('hourly-chart').getContext('2d');
+  hourlyChart = new Chart(hourCtx, {
+    type: 'bar',
+    data: {
+      labels: Array.from({length:24},(_,i)=>i+'h'),
+      datasets: [{ label:'Avg Delay (min)', data:Array(24).fill(0), backgroundColor:'#58a6ff55', borderColor:'#58a6ff', borderWidth:1 }]
+    },
+    options: {
+      responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false } },
+      scales: {
+        x:{ ticks:{ color:'#8b949e', font:{size:8}, maxRotation:0 }, grid:{ color:'rgba(255,255,255,0.06)' } },
+        y:{ ticks:{ color:'#8b949e', font:{size:8} }, grid:{ color:'rgba(255,255,255,0.06)' } }
+      }
+    }
+  });
+}
+
+// ── STARTUP ───────────────────────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  initCharts();
+});
+</script>
+</body>
+</html>
